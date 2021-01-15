@@ -1,87 +1,157 @@
 package jen
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"text/template"
 
 	"gopkg.in/russross/blackfriday.v2"
 	"gopkg.in/yaml.v2"
 )
 
-// Jen generates html from `markdown` and injects it into an optional template
-// specified in its yaml front matter. The rest of the front matter can then
-// be used as template context. Extra template context can be added with `context` map.
-func Jen(markdown []byte, context map[string]interface{}) ([]byte, error) {
-	data := make(map[string]interface{})
-	templateFiles := make([]string, 0)
-
-	if len(context) > 0 {
-		data["extra"] = context
+// Gen applies a go text/template.Template parsed from `templateContents` to the
+// `data` provided and writes that to `output`.
+func Gen(templateContents io.Reader, data interface{}, output io.Writer) error {
+	tplBytes, err := ioutil.ReadAll(templateContents)
+	if err != nil {
+		return fmt.Errorf("could not read template bytes: %w", err)
 	}
 
-	// TODO support json and toml frontmatter
-	yml, md := ParseFrontmatter(markdown)
+	tpl := template.New("__default__")
+	_, err = tpl.Parse(string(tplBytes))
+	if err != nil {
+		return fmt.Errorf("could not parse template: %w", err)
+	}
+
+	// TODO extend, include template functions
+
+	err = tpl.Execute(output, data)
+	if err != nil {
+		return fmt.Errorf("could not execute template: %w", err)
+	}
+
+	return nil
+}
+
+// YamlMarkdown takes yaml-markdown contents from `r` and returns a
+// map[string]interface that contains the yaml inside the contents as well
+// as parsed markdown from the contents as a map of strings to interface{}.
+// The yaml will be under the key `yaml` while the markdown will be under the key `markdown`
+func YamlMarkdown(r io.Reader) (map[string]interface{}, error) {
+	yml, md, err := ParseFrontmatter(r)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse contents: %w", err)
+	}
+
+	data := make(map[string]interface{})
+
 	if len(yml) > 0 {
 		var yamlData map[string]interface{}
 		err := yaml.Unmarshal(yml, &yamlData)
 		if err != nil {
-			return nil, fmt.Errorf("could not parse yaml frontmatter: %v", err)
+			return nil, fmt.Errorf("could not parse yaml frontmatter: %w", err)
 		}
-		data["front_matter"] = yamlData
-		if val, ok := yamlData["template"]; ok {
-			switch val.(type) {
-			case string:
-				templateFiles = append(templateFiles, val.(string))
-			case []interface{}:
-				for _, i := range val.([]interface{}) {
-					s, ok := i.(string)
-					if !ok {
-						return nil, fmt.Errorf("unsupported template value: (%T) %v", val, val)
-					}
-					templateFiles = append(templateFiles, s)
-				}
-			default:
-				return nil, fmt.Errorf("unsupported template value: (%T) %v", val, val)
-			}
-		}
+		data["yaml"] = yamlData
 	}
 
-	html := blackfriday.Run(md)
-
-	localTpl, err := template.New("__default__").Parse(string(html))
-	if err != nil {
-		return nil, fmt.Errorf("could not parse template in markdown: %v", err)
-	}
-
-	buf := &bytes.Buffer{}
-	err = localTpl.Execute(buf, data)
-	if err != nil {
-		return nil, fmt.Errorf("could not apply template in markdown: %v", err)
-	}
-
-	if len(templateFiles) == 0 {
-		return removeNoValue(buf.Bytes()), nil
-	}
-	tpl, err := template.ParseFiles(templateFiles...)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse template files `%v`: %v", templateFiles, err)
-	}
-
-	data["content"] = buf.String()
-	buf.Truncate(0)
-	if tpl.Lookup("template") != nil {
-		err = tpl.ExecuteTemplate(buf, "template", data)
-	} else {
-		err = tpl.Execute(buf, data)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("could not apply template: %v", err)
-	}
-
-	return removeNoValue(buf.Bytes()), nil
+	data["markdown"] = string(blackfriday.Run(md))
+	return data, nil
 }
 
-func removeNoValue(b []byte) []byte {
-	return bytes.ReplaceAll(b, []byte("<no value>"), []byte(""))
+// ParseFrontmatter extracts frontmatter from `r` (representing a
+// reader with yaml-markdown) and returns the frontmatter and the
+// markdown
+func ParseFrontmatter(r io.Reader) (matter []byte, rest []byte, err error) {
+	var (
+		beforematter = 1
+		inmatter     = 2
+		aftermatter  = 3
+	)
+	status := beforematter
+
+	hyphenCount := 0
+
+	mainBuf := bufio.NewReader(r)
+	matterBuf := &bytes.Buffer{}
+	mdBuf := &bytes.Buffer{}
+	tempBuf := &bytes.Buffer{}
+
+	for {
+		b, err := mainBuf.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, nil, fmt.Errorf("could not read byte: %w", err)
+		}
+
+		switch status {
+		case beforematter:
+			switch b {
+			case '-':
+				hyphenCount++
+				// just in case it turns out it wasn't a separator
+				tempBuf.WriteByte(b)
+			case '\n':
+				if hyphenCount >= 3 {
+					status = inmatter
+					hyphenCount = 0
+					// since we got front matter, reset the content
+					// we had already put into the markdown buffer
+					mdBuf.Truncate(0)
+					tempBuf.Truncate(0)
+				} else {
+					mdBuf.Write(tempBuf.Bytes())
+					tempBuf.Truncate(0)
+					mdBuf.WriteByte(b)
+				}
+			default:
+				// assume there's no front matter
+				mdBuf.Write(tempBuf.Bytes())
+				tempBuf.Truncate(0)
+				mdBuf.WriteByte(b)
+				hyphenCount = 0
+			}
+		case inmatter:
+			switch b {
+			case '-':
+				hyphenCount++
+				// just in case it turns out it wasn't a separator
+				tempBuf.WriteByte(b)
+			case '\n':
+				if hyphenCount >= 3 {
+					status = aftermatter
+					hyphenCount = 0
+					tempBuf.Truncate(0)
+				} else {
+					matterBuf.Write(tempBuf.Bytes())
+					tempBuf.Truncate(0)
+					matterBuf.WriteByte(b)
+				}
+			default:
+				matterBuf.Write(tempBuf.Bytes())
+				tempBuf.Truncate(0)
+				matterBuf.WriteByte(b)
+				hyphenCount = 0
+			}
+		case aftermatter:
+			mdBuf.WriteByte(b)
+		}
+	}
+
+	// in case any temp stuff was left
+	switch status {
+	case beforematter, aftermatter:
+		mdBuf.Write(tempBuf.Bytes())
+	case inmatter:
+		matterBuf.Write(tempBuf.Bytes())
+	}
+
+	matter = matterBuf.Bytes()
+	rest = mdBuf.Bytes()
+	err = nil
+	return
 }
