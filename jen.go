@@ -14,21 +14,20 @@ import (
 
 // Gen applies a go text/template.Template parsed from `templateContents` to the
 // `data` provided and writes that to `output`.
-func Gen(templateContents io.Reader, data interface{}, output io.Writer) error {
-	tplBytes, err := ioutil.ReadAll(templateContents)
-	if err != nil {
-		return fmt.Errorf("could not read template bytes: %w", err)
+func Gen(templateFiles []string, data interface{}, output io.Writer) error {
+	t := template.New("__default__")
+	for _, filename := range templateFiles {
+		contents, err := ioutil.ReadFile(filename)
+		if err != nil {
+			return fmt.Errorf("could not read template file %q: %w", filename, err)
+		}
+		_, err = t.Parse(string(contents))
+		if err != nil {
+			return fmt.Errorf("could not parse template file %q: %w", filename, err)
+		}
 	}
 
-	tpl := template.New("__default__")
-	_, err = tpl.Parse(string(tplBytes))
-	if err != nil {
-		return fmt.Errorf("could not parse template: %w", err)
-	}
-
-	// TODO extend, include template functions
-
-	err = tpl.Execute(output, data)
+	err := t.Execute(output, data)
 	if err != nil {
 		return fmt.Errorf("could not execute template: %w", err)
 	}

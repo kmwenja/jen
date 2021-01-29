@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"git.kmwenja.co.ke/jen"
 	"github.com/urfave/cli/v2"
@@ -42,43 +43,37 @@ func main() {
 }
 
 func genCmd(c *cli.Context) error {
-	if c.NArg() < 2 {
-		return fmt.Errorf("not enough arguments passed. Usage: jen gen <template> <data>")
+	if c.NArg() < 1 {
+		return fmt.Errorf("not enough arguments passed. Usage: jen gen <template> [data]")
+	}
+
+	var d interface{}
+
+	if c.NArg() > 1 {
+		var err error
+		dataFile := c.Args().Get(1)
+		var dr io.Reader
+		if dataFile == "-" {
+			dr = io.Reader(os.Stdin)
+		} else {
+			f, err := os.Open(dataFile)
+			if err != nil {
+				return fmt.Errorf("could not read data from file %q: %w", dataFile, err)
+			}
+			defer f.Close()
+
+			dr = io.Reader(f)
+		}
+
+		d, err = parseJSON(dr)
+		if err != nil {
+			return fmt.Errorf("could not parse json data: %w", err)
+		}
 	}
 
 	templateFile := c.Args().Get(0)
-	dataFile := c.Args().Get(1)
-
-	var err error
-
-	var dr io.Reader
-	if dataFile == "-" {
-		dr = io.Reader(os.Stdin)
-	} else {
-		f, err := os.Open(dataFile)
-		if err != nil {
-			return fmt.Errorf("could not read data from file %q: %w", dataFile, err)
-		}
-		defer f.Close()
-
-		dr = io.Reader(f)
-	}
-
-	d, err := parseJSON(dr)
-	if err != nil {
-		return fmt.Errorf("could not parse json data: %w", err)
-	}
-
-	var t io.Reader
-	f, err := os.Open(templateFile)
-	if err != nil {
-		return fmt.Errorf("could not open template file %q: %w", templateFile, err)
-	}
-	defer f.Close()
-
-	t = io.Reader(f)
-
-	err = jen.Gen(t, d, os.Stdout)
+	templateFiles := strings.Split(templateFile, ",")
+	err := jen.Gen(templateFiles, d, os.Stdout)
 	if err != nil {
 		return fmt.Errorf("could not generate output: %w", err)
 	}
