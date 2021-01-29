@@ -1,51 +1,49 @@
 Jen
 ===
 
-Generate a html page from a markdown file.
-Can use a template to further customize the output.
+Generate a html page using Golang templates.
+Jen also allows for JSON data to be applied to the template during generation.
 
 Usage
 -----
 
-`jen file.md > file.html`
+Help: `jen --help`.
 
-`jen --template-data file.yaml|file.json|file.toml file.md > file.html`
-
+Generate HTML with JSON data:
+```html
+# template.html
+Hello {{.name}}!
 ```
-# file.md
+
+```bash
+echo '{"name": "World!"}' | jen g template.html -
+```
+
+Using markdown:
+```markdown
+# content.md
 ---
-template: jen.template
 title: Hello World
 ---
+# Hello World
 
-This is a markdown file.
+Some kind words.
 ```
 
-```
-# jen.template
+```html
+# template.html
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>{{ .front_matter.title }}</title>
+    <meta charset="UTF-8">
+    <title>{{.yaml.title}}</title>
 </head>
 <body>
-    <h1>{{ .front_matter.title }}</h1>
-
-    {{ .content }}
+   {{.markdown}}
 </body>
 </html>
 ```
 
-Features
---------
-- Accept multiple `template` (solves the problem of template composition)
-- Accept multiple `template-data` (solves the problem of data composition)
-- Support frontline yaml matter
-- Support templating within the markdown
-
-Notes
------
-
-ls to json: `tree -n -D --noreport -L 1 -J`
-Blog Roll: `for i in blog/*.md; do jen extract-front-matter $(cat $i) | jq {.title,.date}
+```bash
+jen m content.md | jen g template.html -
+```
